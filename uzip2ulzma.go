@@ -12,13 +12,31 @@ int zlib_decomp(void *out, int olen, void *in, int ilen) {
 		return 0;
 	return zolen;
 }
-int lzma_comp(void *out, int olen, void *in, int ilen) {
-	size_t zolen = 0;
-	lzma_ret err = lzma_easy_buffer_encode(LZMA_PRESET_DEFAULT,
-		LZMA_CHECK_CRC32, NULL, in, ilen, out, &zolen, olen);
-	if (err)
+
+typedef struct {
+	lzma_stream strm;
+	lzma_filter filt[2];
+	lzma_options_lzma opt;
+} lzma_data;
+
+void lzma_init(lzma_data *l) {
+	lzma_lzma_preset(&l->opt, LZMA_PRESET_DEFAULT);
+	l->filt[0].id = LZMA_FILTER_LZMA2;
+	l->filt[0].options = &l->opt;
+	l->filt[1].id = LZMA_VLI_UNKNOWN;
+}
+int lzma_comp(lzma_data *l, void *out, int olen, void *in, int ilen) {
+	lzma_ret err = lzma_stream_encoder(&l->strm, l->filt, LZMA_CHECK_CRC32);
+	if (err != LZMA_OK)
 		return 0;
-	return zolen;
+	l->strm.next_in = in;
+	l->strm.avail_in = ilen;
+	l->strm.next_out = out;
+	l->strm.avail_out = olen;
+	err = lzma_code(&l->strm, LZMA_FINISH);
+	if (err != LZMA_STREAM_END)
+		return 0;
+	return olen - l->strm.avail_out;
 }
 */
 import "C"
@@ -75,6 +93,25 @@ func (u *Uzip) Decomp(in []byte) []byte {
 }
 
 
+type Lzma struct {
+	strm C.lzma_data
+}
+func NewLzma() *Lzma {
+	l := new(Lzma)
+	C.lzma_init(&l.strm)
+	return l
+}
+func (l *Lzma) Comp(in []byte) []byte {
+	out := make([]byte, len(in) * 2)
+	err := C.lzma_comp(&l.strm, unsafe.Pointer(&out[0]), C.int(len(out)),
+	 	unsafe.Pointer(&in[0]), C.int(len(in)))
+	if err == 0 {
+		panic("Compression error")
+	}
+	return out[:err]
+}
+
+
 const UlzmaVers = "#L3"
 
 type Ulzma struct {
@@ -90,16 +127,6 @@ func NewUlzma(name string, uz *Uzip) *Ulzma {
 	offsets[0] = 0
 	io.Seek(int64(MagicLen + 8 + 8 * len(offsets)), 0)
 	return &Ulzma{io, uz.bsize, uz.blocks, offsets, 0}
-}
-
-func (u *Ulzma) Comp(in []byte) []byte {
-	out := make([]byte, len(in) * 2)
-	err := C.lzma_comp(unsafe.Pointer(&out[0]), C.int(len(out)),
-	 	unsafe.Pointer(&in[0]), C.int(len(in)))
-	if err == 0 {
-		panic("Compression error")
-	}
-	return out[:err]
 }
 
 func (u *Ulzma) Append(buf []byte) {
@@ -123,11 +150,12 @@ func main() {
 	uz := NewUzip(os.Args[1])
 	ul := NewUlzma(os.Args[2], uz)
 	
-	for b := 0; b < uz.blocks; b++ {
+	l := NewLzma()
+	for b := 0; b < int(uz.blocks); b++ {
 		fmt.Println(b)
 		zb := uz.Read(b)
 		buf := uz.Decomp(zb)
-		lb := ul.Comp(buf)
+		lb := l.Comp(buf)
 		ul.Append(lb)
 	}
 	ul.Finish()
