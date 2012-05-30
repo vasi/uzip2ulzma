@@ -125,8 +125,8 @@ type Ulzma struct {
 func NewUlzma(name string, uz *Uzip) *Ulzma {
 	io, _ := os.Create(name)
 	offsets := make([]uint64, len(uz.offsets))
-	offsets[0] = MagicLen + 4 + 4
-	io.Seek(int64(offsets[0]) + 8 * int64(len(offsets)), 0)
+	offsets[0] = uint64(MagicLen + 4 + 4 + 8 * len(offsets))
+	io.Seek(int64(offsets[0]), 0)
 	return &Ulzma{io, uz.bsize, uz.blocks, offsets, 0}
 }
 
