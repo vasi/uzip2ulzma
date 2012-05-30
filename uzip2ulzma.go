@@ -46,6 +46,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"unsafe"
 )
 
@@ -124,8 +125,8 @@ type Ulzma struct {
 func NewUlzma(name string, uz *Uzip) *Ulzma {
 	io, _ := os.Create(name)
 	offsets := make([]uint64, len(uz.offsets))
-	offsets[0] = 0
-	io.Seek(int64(MagicLen + 8 + 8 * len(offsets)), 0)
+	offsets[0] = MagicLen + 4 + 4
+	io.Seek(int64(offsets[0]) + 8 * int64(len(offsets)), 0)
 	return &Ulzma{io, uz.bsize, uz.blocks, offsets, 0}
 }
 
@@ -146,19 +147,59 @@ func (u *Ulzma) Finish() {
 }
 
 
-func main() {
-	uz := NewUzip(os.Args[1])
-	ul := NewUlzma(os.Args[2], uz)
-	
-	l := NewLzma()
-	for b := 0; b < int(uz.blocks); b++ {
-		fmt.Println(b)
-		zb := uz.Read(b)
-		buf := uz.Decomp(zb)
-		lb := l.Comp(buf)
-		ul.Append(lb)
+type Block struct {
+	index int
+	data []byte
+}
+
+func split(u *Uzip, out chan Block) {
+	for i := 0; i < int(u.blocks); i++ {
+		fmt.Println(i)
+		out <- Block{i, u.Read(i)}
 	}
-	ul.Finish()
+	close(out)
+}
+
+func proc(u *Uzip, in chan Block, out chan Block) {
+	l := NewLzma()
+	for b := range in {
+		out <- Block{b.index, l.Comp(u.Decomp(b.data))}
+	}
+}
+
+func combine(u *Ulzma, in chan Block) {
+	blocks := make(map[int] []byte)
+	for want := 0; want < int(u.blocks); {
+		if data, ok := blocks[want]; ok {
+			u.Append(data)
+			delete(blocks, want)
+			want++
+		} else {
+			b := <-in
+			blocks[b.index] = b.data
+		}
+	}
+	u.Finish()
+}
+
+func convert(uz *Uzip, out string, threads int) {
+	ul := NewUlzma(out, uz)
+	rch := make(chan Block, threads * 2)
+	wch := make(chan Block, threads)
+	for i := 0; i < threads; i++ {
+		go proc(uz, rch, wch)
+	}
+	go split(uz, rch)
+	combine(ul, wch)
+}
+
+
+func main() {
+	ncpu := runtime.NumCPU()
+	runtime.GOMAXPROCS(ncpu)
+	
+	uz := NewUzip(os.Args[1])
+	convert(uz, os.Args[2], ncpu)
 }
 
 func grrrr() {
